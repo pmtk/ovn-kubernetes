@@ -107,7 +107,7 @@ func (m *UDNHostIsolationManager) Start(ctx context.Context) error {
 			if err != nil {
 				return nil
 			}
-			if d.Name() == "kubelet.service" {
+			if d.Name() == "kubelet.service" || d.Name() == "microshift.service" {
 				m.kubeletCgroupPath = strings.TrimPrefix(path, "/sys/fs/cgroup/")
 				klog.Infof("Found kubelet cgroup path: %s", m.kubeletCgroupPath)
 				return filepath.SkipAll

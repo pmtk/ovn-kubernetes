@@ -103,11 +103,14 @@ func (m *UDNHostIsolationManager) Start(ctx context.Context) error {
 		// find kubelet cgroup path.
 		// kind cluster uses "kubelet.slice/kubelet.service", while OCP cluster uses "system.slice/kubelet.service".
 		// as long as ovn-k node is running as a privileged container, we can access the host cgroup directory.
+
+		// some k8s distros package everything into a single service
+		kubeletAlternativeServiceName := os.Getenv("KUBELET_ALT_SVC")
 		err := filepath.WalkDir("/sys/fs/cgroup", func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
 			}
-			if d.Name() == "kubelet.service" {
+			if d.Name() == "kubelet.service" || (kubeletAlternativeServiceName != "" && d.Name() == kubeletAlternativeServiceName) {
 				m.kubeletCgroupPath = strings.TrimPrefix(path, "/sys/fs/cgroup/")
 				klog.Infof("Found kubelet cgroup path: %s", m.kubeletCgroupPath)
 				return filepath.SkipAll

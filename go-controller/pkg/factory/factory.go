@@ -285,11 +285,24 @@ func NewMasterWatchFactory(ovnClientset *util.OVNMasterClientset) (*WatchFactory
 		}
 	}
 
+
 	// Initialize VTEP factory for EVPN support in combined mode (cluster-manager + ovnkube-controller).
 	if util.IsEVPNEnabled() {
 		wf.vtepFactory = vtepinformerfactory.NewSharedInformerFactory(ovnClientset.VTEPClient, resyncInterval)
 		// make sure shared informer is created for a factory, so on wf.vtepFactory.Start() it is initialized and caches are synced.
 		wf.vtepFactory.K8s().V1().VTEPs().Informer()
+	}
+
+	// Initialize FRR factory for route advertisements support in cluster manager mode.
+	// The FRRClient is only available in OVNMasterClientset (not OVNKubeControllerClientset),
+	// so this initialization must happen here rather than in NewOVNKubeControllerWatchFactory.
+	if util.IsRouteAdvertisementsEnabled() {
+		if err := frrapi.AddToScheme(frrscheme.Scheme); err != nil {
+			return nil, err
+		}
+		wf.frrFactory = frrinformerfactory.NewSharedInformerFactory(ovnClientset.FRRClient, resyncInterval)
+		// make sure shared informer is created for a factory, so on wf.frrFactory.Start() it is initialized and caches are synced.
+		wf.frrFactory.Api().V1beta1().FRRConfigurations().Informer()
 	}
 
 	return wf, nil

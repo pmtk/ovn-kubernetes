@@ -93,7 +93,6 @@ func NewController(
 ) *Controller {
 	c := &Controller{
 		wf:              wf,
-		eipLister:       wf.EgressIPInformer().Lister(),
 		frrLister:       wf.FRRConfigurationsInformer().Lister(),
 		nadLister:       wf.NADInformer().Lister(),
 		nodeLister:      wf.NodeCoreInformer().Lister(),
@@ -103,6 +102,10 @@ func NewController(
 		nadClient:       ovnClient.NetworkAttchDefClient,
 		raClient:        ovnClient.RouteAdvertisementsClient,
 		nm:              nm,
+	}
+	// Only set eipLister if EgressIP is enabled
+	if config.OVNKubernetesFeature.EnableEgressIP {
+		c.eipLister = wf.EgressIPInformer().Lister()
 	}
 
 	handleError := func(key string, errorstatus error) error {
@@ -162,15 +165,18 @@ func NewController(
 	}
 	c.nodeController = controllerutil.NewController("clustermanager routeadvertisements node controller", nodeConfig)
 
-	eipConfig := &controllerutil.ControllerConfig[eiptypes.EgressIP]{
-		RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
-		Reconcile:      c.reconcileEgressIPs,
-		Threadiness:    1,
-		Informer:       wf.EgressIPInformer().Informer(),
-		Lister:         wf.EgressIPInformer().Lister().List,
-		ObjNeedsUpdate: egressIPNeedsUpdate,
+	// Only create eipController if EgressIP is enabled
+	if config.OVNKubernetesFeature.EnableEgressIP {
+		eipConfig := &controllerutil.ControllerConfig[eiptypes.EgressIP]{
+			RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
+			Reconcile:      c.reconcileEgressIPs,
+			Threadiness:    1,
+			Informer:       wf.EgressIPInformer().Informer(),
+			Lister:         wf.EgressIPInformer().Lister().List,
+			ObjNeedsUpdate: egressIPNeedsUpdate,
+		}
+		c.eipController = controllerutil.NewController("clustermanager routeadvertisements egressip controller", eipConfig)
 	}
-	c.eipController = controllerutil.NewController("clustermanager routeadvertisements egressip controller", eipConfig)
 
 	nsConfig := &controllerutil.ControllerConfig[corev1.Namespace]{
 		RateLimiter:    workqueue.DefaultTypedControllerRateLimiter[string](),
@@ -187,25 +193,33 @@ func NewController(
 
 func (c *Controller) Start() error {
 	defer klog.Infof("Cluster manager routeadvertisements started")
-	return controllerutil.Start(
-		c.eipController,
+	controllers := []controllerutil.Reconciler{
 		c.frrController,
 		c.nadController,
 		c.nodeController,
 		c.nsController,
 		c.raController,
-	)
+	}
+	// Only include eipController if EgressIP is enabled
+	if c.eipController != nil {
+		controllers = append(controllers, c.eipController)
+	}
+	return controllerutil.Start(controllers...)
 }
 
 func (c *Controller) Stop() {
-	controllerutil.Stop(
-		c.eipController,
+	controllers := []controllerutil.Reconciler{
 		c.frrController,
 		c.nadController,
 		c.nodeController,
 		c.nsController,
 		c.raController,
-	)
+	}
+	// Only include eipController if EgressIP is enabled
+	if c.eipController != nil {
+		controllers = append(controllers, c.eipController)
+	}
+	controllerutil.Stop(controllers...)
 	klog.Infof("Cluster manager routeadvertisements stopped")
 }
 
@@ -1212,6 +1226,10 @@ func (c *Controller) getSelectedNADs(networkSelectors apitypes.NetworkSelectors)
 // map.
 func (c *Controller) getEgressIPsByNodesByNetworks(networks sets.Set[string]) (map[string]map[string]sets.Set[string], error) {
 	eipsByNodesByNetworks := map[string]map[string]sets.Set[string]{}
+	// If EgressIP is not enabled, return empty map
+	if c.eipLister == nil {
+		return eipsByNodesByNetworks, nil
+	}
 	addEgressIPsByNodesByNetwork := func(eipsByNodes map[string]string, network string) {
 		for node, eip := range eipsByNodes {
 			if eipsByNodesByNetworks[node] == nil {

@@ -582,15 +582,52 @@ func (udng *UserDefinedNetworkGateway) getDefaultRoute() ([]netlink.Route, error
 		if isV6 {
 			_, defaultAnyCIDR, _ = net.ParseCIDR("::/0")
 		}
+
+		linkIndex := udng.gwInterfaceIndex
+		gw := nextHop
+
+		// In no-uplink mode, the gateway next hop is a dummy masquerade IP
+		// pointing at br-ex which has no physical uplink. Use the host's
+		// actual default route instead so UDN traffic can reach external
+		// networks via the physical interface.
+		if config.Gateway.AllowNoUplink && isDummyMasqueradeIP(nextHop) {
+			family := netlink.FAMILY_V4
+			if isV6 {
+				family = netlink.FAMILY_V6
+			}
+			ifName, gwIP, err := getDefaultGatewayInterfaceByFamily(family, "")
+			if err == nil && gwIP != nil {
+				link, err := util.GetNetLinkOps().LinkByName(ifName)
+				if err == nil {
+					linkIndex = link.Attrs().Index
+					gw = gwIP
+					klog.Infof("UDN %s: no-uplink mode detected, using host default route via %s dev %s instead of dummy masquerade IP",
+						udng.GetNetworkName(), gwIP, ifName)
+				}
+			}
+		}
+
 		retVal = append(retVal, netlink.Route{
-			LinkIndex: udng.gwInterfaceIndex,
+			LinkIndex: linkIndex,
 			Dst:       defaultAnyCIDR,
 			MTU:       networkMTU,
-			Gw:        nextHop,
+			Gw:        gw,
 			Table:     udng.vrfTableId,
 		})
 	}
 	return retVal, nil
+}
+
+// isDummyMasqueradeIP returns true if the IP is the dummy next hop masquerade
+// IP used when there is no physical uplink on the gateway bridge.
+func isDummyMasqueradeIP(ip net.IP) bool {
+	if config.IPv4Mode && ip.Equal(config.Gateway.MasqueradeIPs.V4DummyNextHopMasqueradeIP) {
+		return true
+	}
+	if config.IPv6Mode && ip.Equal(config.Gateway.MasqueradeIPs.V6DummyNextHopMasqueradeIP) {
+		return true
+	}
+	return false
 }
 
 func (udng *UserDefinedNetworkGateway) getDefaultRouteExceptIfVRFLite() ([]netlink.Route, error) {
